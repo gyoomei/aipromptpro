@@ -352,15 +352,43 @@ footer a:hover{text-decoration:underline}
     <div class="logo-text">AI Prompt <span>Generator Pro</span></div>
   </a>
   <div class="nav-actions">
+    <button class="btn-icon" id="apiSettingsBtn" title="API Settings" onclick="toggleApiSettings()">🔑</button>
     <button class="btn-icon" id="themeToggle" title="Toggle theme">◐</button>
   </div>
 </nav>
+
+<!-- API Settings Dropdown -->
+<div id="apiSettingsPanel" style="display:none;position:fixed;top:64px;right:20px;z-index:150;width:360px;max-width:calc(100vw - 40px);background:var(--glass2);border:1px solid var(--line2);border-radius:var(--radius-lg);padding:24px;backdrop-filter:blur(20px);box-shadow:0 12px 40px rgba(0,0,0,.5)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <div style="font-family:var(--font-display);font-size:15px;font-weight:600">AI Engine Settings</div>
+    <button onclick="toggleApiSettings()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px">✕</button>
+  </div>
+  <div style="margin-bottom:16px">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:500">Gemini API Key <span style="color:var(--good)">● Recommended</span></div>
+    <div style="display:flex;gap:8px">
+      <input type="password" id="geminiKeyInput" placeholder="AIza..." style="flex:1;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--line2);background:var(--panel);color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none" onfocus="this.style.borderColor='var(--acc)'" onblur="this.style.borderColor='var(--line2)'">
+      <button class="btn-secondary" onclick="saveGeminiKey()" style="white-space:nowrap">Save</button>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:8px">
+      Free at <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--acc);text-decoration:none">aistudio.google.com/apikey</a> · 15 req/min · 1M tokens/day<br>
+      Key stored locally in your browser (localStorage). Never sent to our server.
+    </div>
+  </div>
+  <div style="border-top:1px solid var(--line);padding-top:14px">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:500">Fallback (No API Key)</div>
+    <div style="font-size:12px;color:var(--dim)">
+      <span style="color:var(--warn)">⚡</span> Pollinations.ai — free, rate-limited (~1 req/10s)<br>
+      <span style="color:var(--cyan)">📊</span> Client-side — instant, uses visual analysis data only
+    </div>
+  </div>
+  <div id="apiStatus" style="margin-top:12px;padding:8px 12px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;display:none"></div>
+</div>
 
 <main>
   <section class="hero reveal">
     <div class="hero-badge">✦ AI-Powered Analysis</div>
     <h1>Image & Video to<br><span class="grad">Professional Prompts</span></h1>
-    <p>Deep visual analysis with AI-generated prompts optimized for Midjourney, DALL-E, Stable Diffusion, Kling, and Runway.</p>
+    <p>Deep visual analysis with AI-generated prompts optimized for Midjourney, DALL-E, Stable Diffusion, Kling, and Runway. Supports <strong style="color:var(--acc)">Gemini</strong> (free API key) or Pollinations.ai (no key).</p>
   </section>
 
   <div class="mode-tabs reveal">
@@ -592,6 +620,44 @@ if(window.IntersectionObserver){
 } else {
   document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('visible'); });
 }
+
+/* ==================== API SETTINGS ==================== */
+function toggleApiSettings(){
+  var panel = document.getElementById('apiSettingsPanel');
+  if(panel.style.display==='none'){
+    panel.style.display='';
+    document.getElementById('geminiKeyInput').value = getGeminiKey();
+    updateApiStatus();
+  } else {
+    panel.style.display='none';
+  }
+}
+
+function saveGeminiKey(){
+  var key = document.getElementById('geminiKeyInput').value.trim();
+  setGeminiKey(key);
+  updateApiStatus();
+  showToast(key?'Gemini API key saved!':'API key removed — using Pollinations fallback','success');
+}
+
+function updateApiStatus(){
+  var el = document.getElementById('apiStatus');
+  var key = getGeminiKey();
+  if(key){
+    el.style.display='';
+    el.style.background='rgba(16,185,129,.1)';
+    el.style.color='var(--good)';
+    el.textContent='✅ Gemini active — '+key.substring(0,6)+'...'+key.substring(key.length-4);
+  } else {
+    el.style.display='';
+    el.style.background='rgba(245,158,11,.1)';
+    el.style.color='var(--warn)';
+    el.textContent='⚡ No key — using Pollinations.ai (rate-limited)';
+  }
+}
+
+// Load saved key on startup
+if(getGeminiKey()){ updateApiStatus(); }
 
 /* ==================== MODE SWITCH ==================== */
 function setMode(m){
@@ -878,6 +944,10 @@ function formatSize(bytes){
 
 /* ==================== AI PROMPT GENERATION ==================== */
 var AI_URL = 'https://text.pollinations.ai/openai';
+var GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+
+function getGeminiKey(){ return localStorage.getItem('aipg-gemini-key') || ''; }
+function setGeminiKey(k){ localStorage.setItem('aipg-gemini-key', k); }
 
 function generateImagePrompt(analysis, ratio){
   var sys = 'You are a professional AI prompt engineer specializing in image generation for Midjourney, DALL-E, and Stable Diffusion. Generate highly detailed, optimized prompts based on visual analysis data. NEVER leave any field empty. ALL fields must have minimum 6 descriptive words. full_prompt must be minimum 80 words, standalone usable, with no markdown formatting. Always return valid JSON with exact keys: main_subject, secondary_elements, environment, lighting, camera_angle, depth_of_field, texture_details, mood, color_grading, style_reference, full_prompt, quality_tags.';
@@ -925,6 +995,38 @@ function callAI(systemPrompt, userMessage, attempt){
   attempt = attempt || 1;
   var MAX_RETRIES = 3;
   var BACKOFF = [5000, 12000, 20000];
+  var geminiKey = getGeminiKey();
+
+  // Try Gemini first if key available
+  if(geminiKey){
+    return callGemini(systemPrompt, userMessage, geminiKey).catch(function(err){
+      console.warn('Gemini failed, falling back to Pollinations:',err.message);
+      return callPollinations(systemPrompt, userMessage, attempt, MAX_RETRIES, BACKOFF);
+    });
+  }
+  return callPollinations(systemPrompt, userMessage, attempt, MAX_RETRIES, BACKOFF);
+}
+
+function callGemini(systemPrompt, userMessage, apiKey){
+  var body = {
+    contents:[{role:'user', parts:[{text:systemPrompt+'\n\n'+userMessage}]}],
+    generationConfig:{temperature:0.7,maxOutputTokens:2048,responseMimeType:'application/json'}
+  };
+  return fetch(GEMINI_URL+'?key='+apiKey, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body),
+    signal:AbortSignal.timeout(60000)
+  }).then(function(r){
+    if(!r.ok) return r.json().then(function(e){throw new Error(e.error?.message||'Gemini HTTP '+r.status);});
+    return r.json();
+  }).then(function(d){
+    if(!d.candidates||!d.candidates[0]||!d.candidates[0].content) throw new Error('Invalid Gemini response');
+    return d.candidates[0].content.parts[0].text;
+  });
+}
+
+function callPollinations(systemPrompt, userMessage, attempt, MAX_RETRIES, BACKOFF){
   return fetch(AI_URL, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -939,13 +1041,13 @@ function callAI(systemPrompt, userMessage, attempt){
       var delay = BACKOFF[attempt-1] || 10000;
       setLoadingText('Rate limited, retrying...','Attempt '+attempt+'/'+MAX_RETRIES+' — waiting '+(delay/1000)+'s');
       return new Promise(function(ok){setTimeout(ok,delay);}).then(function(){
-        return callAI(systemPrompt, userMessage, attempt+1);
+        return callPollinations(systemPrompt, userMessage, attempt+1, MAX_RETRIES, BACKOFF);
       });
     }
     if(!r.ok) throw new Error('API returned HTTP '+r.status);
     return r.json();
   }).then(function(d){
-    if(typeof d === 'string') return d; // already retried and got string
+    if(typeof d === 'string') return d;
     if(!d.choices || !d.choices[0] || !d.choices[0].message) throw new Error('Invalid API response');
     return d.choices[0].message.content;
   });
