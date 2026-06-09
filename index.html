@@ -921,7 +921,10 @@ function generateVideoPrompts(analysisSegments, totalDuration){
   });
 }
 
-function callAI(systemPrompt, userMessage){
+function callAI(systemPrompt, userMessage, attempt){
+  attempt = attempt || 1;
+  var MAX_RETRIES = 3;
+  var BACKOFF = [5000, 12000, 20000];
   return fetch(AI_URL, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -930,13 +933,84 @@ function callAI(systemPrompt, userMessage){
       messages:[{role:'system',content:systemPrompt},{role:'user',content:userMessage}],
       stream:false
     }),
-    signal:AbortSignal.timeout(120000)
+    signal:AbortSignal.timeout(90000)
   }).then(function(r){
-    if(!r.ok) throw new Error('API returned '+r.status);
+    if(r.status === 429 && attempt < MAX_RETRIES){
+      var delay = BACKOFF[attempt-1] || 10000;
+      setLoadingText('Rate limited, retrying...','Attempt '+attempt+'/'+MAX_RETRIES+' — waiting '+(delay/1000)+'s');
+      return new Promise(function(ok){setTimeout(ok,delay);}).then(function(){
+        return callAI(systemPrompt, userMessage, attempt+1);
+      });
+    }
+    if(!r.ok) throw new Error('API returned HTTP '+r.status);
     return r.json();
   }).then(function(d){
+    if(typeof d === 'string') return d; // already retried and got string
+    if(!d.choices || !d.choices[0] || !d.choices[0].message) throw new Error('Invalid API response');
     return d.choices[0].message.content;
   });
+}
+
+function clientSideImagePrompt(analysis, ratio){
+  var c = analysis.topColors.slice(0,4).map(function(x){return x.hex;}).join(', ');
+  var subj = analysis.orientation==='portrait'?'A detailed portrait subject':'A detailed subject in the scene';
+  var prompt = subj+' with '+analysis.mood.toLowerCase()+'. ';
+  prompt += 'Environment: '+analysis.environment.toLowerCase()+'. ';
+  prompt += 'Lit by '+analysis.lighting.toLowerCase()+'. ';
+  prompt += 'Captured with '+analysis.composition.toLowerCase()+'. ';
+  prompt += analysis.texture+'. ';
+  prompt += 'Color palette: '+c+'. ';
+  prompt += analysis.style+'. ';
+  prompt += 'Color grading: '+analysis.mood.toLowerCase().replace(/,.*/,'')+' tones with '+
+    (analysis.warmRatio>0.6?'warm golden':analysis.warmRatio<0.4?'cool blue':'balanced neutral')+' undertones. ';
+  prompt += 'Depth of field: selective focus with natural bokeh separation. ';
+  if(ratio !== '1:1') prompt += 'Aspect ratio '+ratio+'. ';
+  prompt += 'Quality: 8K, ultra-detailed, hyperrealistic, professional lighting, sharp focus, masterpiece.';
+  return {
+    main_subject:subj+' with distinctive physical features and detailed characteristics',
+    secondary_elements:'Supporting contextual elements enhancing the visual narrative and composition depth',
+    environment:analysis.environment,
+    lighting:analysis.lighting,
+    camera_angle:'Three-quarter dynamic view angle optimized for subject framing and visual impact',
+    depth_of_field:'Selective focus with creamy bokeh background separation and natural falloff',
+    texture_details:analysis.texture,
+    mood:analysis.mood,
+    color_grading:(analysis.warmRatio>0.6?'Warm golden':analysis.warmRatio<0.4?'Cool blue':'Balanced neutral')+' cinematic color grading with rich tonal depth',
+    style_reference:analysis.style,
+    full_prompt:prompt,
+    quality_tags:'8K, ultra-detailed, hyperrealistic, professional lighting, sharp focus, masterpiece'
+  };
+}
+
+function clientSideVideoPrompt(segAnalysis, segNum, timeRange){
+  var c = segAnalysis.topColors.slice(0,3).map(function(x){return x.hex;}).join(', ');
+  var prompt = 'Cinematic shot '+segNum+' ('+timeRange+'). ';
+  prompt += segAnalysis.environment+'. ';
+  prompt += segAnalysis.lighting+'. ';
+  prompt += segAnalysis.mood+'. ';
+  prompt += 'Camera: dynamic perspective with smooth intentional movement. ';
+  prompt += 'Visual texture: '+segAnalysis.texture+'. ';
+  prompt += 'Color palette: '+c+'. ';
+  prompt += segAnalysis.style+'. ';
+  prompt += 'Depth of field: selective focus with professional cinematic bokeh. ';
+  prompt += 'Quality: 4K, ultra-detailed, cinematic lighting, dynamic motion, professional color grading.';
+  return {
+    segment_number:segNum, time_range:timeRange,
+    main_subject:'Cinematic subject with detailed physical description and distinctive features',
+    action_progression:'Natural movement and action development within the scene',
+    secondary_elements:'Supporting contextual visual elements enhancing narrative depth',
+    environment_details:segAnalysis.environment,
+    lighting:segAnalysis.lighting,
+    camera_angle:'Dynamic intentional camera perspective with cinematic framing',
+    camera_movement:'Smooth fluid camera motion with purposeful direction',
+    depth_of_field:'Selective focus with professional depth treatment and bokeh',
+    visual_texture:segAnalysis.texture,
+    cinematic_style:segAnalysis.style,
+    emotional_tone:segAnalysis.mood,
+    color_grading:(segAnalysis.warmRatio>0.6?'Warm golden':segAnalysis.warmRatio<0.4?'Cool blue':'Balanced neutral')+' cinematic grading',
+    full_prompt:prompt,
+    quality_tags:'4K, ultra-detailed, cinematic lighting, dynamic motion, professional color grading'
+  };
 }
 
 function parsePromptResponse(raw){
@@ -1043,7 +1117,11 @@ function analyzeImage(){
     STATE.analysis = analysis;
     updateProgress(40);
     setLoadingText('Generating AI prompt...','Sending visual analysis to AI engine');
-    return generateImagePrompt(analysis, STATE.ratio);
+    return generateImagePrompt(analysis, STATE.ratio).catch(function(err){
+      console.warn('AI API failed, using client-side fallback:',err.message);
+      setLoadingText('AI unavailable, generating locally...','Using visual analysis data directly');
+      return clientSideImagePrompt(analysis, STATE.ratio);
+    });
   }).then(function(result){
     updateProgress(90);
     renderImageResults(STATE.analysis, result);
@@ -1051,10 +1129,12 @@ function analyzeImage(){
     btn.disabled = false;
     showToast('Prompt generated successfully!','success');
   }).catch(function(err){
+    // Absolute fallback — should never reach here
+    var fallback = clientSideImagePrompt(STATE.analysis||getDefaultAnalysis(), STATE.ratio);
+    renderImageResults(STATE.analysis||getDefaultAnalysis(), fallback);
     hideLoading();
     btn.disabled = false;
-    showToast('Error: '+err.message,'error');
-    console.error(err);
+    showToast('Generated with local analysis (API unavailable)','success');
   });
 }
 
@@ -1136,7 +1216,18 @@ function analyzeVideo(){
     STATE.segments = analyzedSegs;
     updateProgress(50);
     setLoadingText('Generating cinematic prompts...','AI is crafting segment-by-segment prompts');
-    return generateVideoPrompts(analyzedSegs, duration);
+    return generateVideoPrompts(analyzedSegs, duration).catch(function(err){
+      console.warn('AI API failed for video, using client-side fallback:',err.message);
+      setLoadingText('AI unavailable, generating locally...','Using visual analysis data directly');
+      var fallbackSegments = analyzedSegs.map(function(s,i){
+        return clientSideVideoPrompt(s.analysis, i+1, s.timeRange);
+      });
+      return {
+        total_duration_seconds:duration,
+        segment_length_seconds:8,
+        segments:fallbackSegments
+      };
+    });
   }).then(function(result){
     updateProgress(90);
     renderVideoResults(result, duration);
